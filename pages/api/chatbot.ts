@@ -1,7 +1,5 @@
-export const runtime = "edge";
-
 import Groq from 'groq-sdk';
-import { StreamingTextResponse } from 'ai';
+import type { NextApiRequest, NextApiResponse } from 'next';
 
 const groq = new Groq({ apiKey: process.env.NEXT_PUBLIC_GROQ_API_KEY });
 
@@ -17,9 +15,13 @@ When responding:
 Example user input: "We argue a lot about parenting our 5-year-old, and it's straining our relationship."
 Example response: "I'm sorry to hear you're facing tension over parenting—that can be really tough. It sounds like you both care deeply about your 5-year-old, which is a great foundation. Can you share what specific parenting issues spark these arguments? In the meantime, try setting aside 10 minutes daily to calmly discuss one parenting topic, using 'I feel' statements to express your views. This can help you both feel heard and reduce conflict."`;
 
-export default async function POST(req: Request) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
   try {
-    const { messages, data } = await req.json();
+    const { messages, data } = req.body;
     const context = data?.context || '';
     const userMessage = messages[messages.length - 1]?.content || '';
 
@@ -29,33 +31,26 @@ export default async function POST(req: Request) {
       { role: 'user', content: `${context ? `Context: ${context}\n\n` : ''}${userMessage}` },
     ];
 
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
     const stream = await groq.chat.completions.create({
       messages: enhancedMessages,
-      model: 'llama3-8b-8192',
+      model: 'llama-3.1-8b-instant',
       stream: true,
       max_tokens: 1024,
-      temperature: 0.7,
+      temperature: 0.5,
     });
 
-    return new StreamingTextResponse(
-      new ReadableStream({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          try {
-            for await (const chunk of stream) {
-              const content = chunk.choices[0]?.delta?.content || '';
-              controller.enqueue(encoder.encode(content));
-            }
-          } catch (error) {
-            controller.error(error);
-          } finally {
-            controller.close();
-          }
-        },
-      })
-    );
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        res.write(content);
+      }
+    }
+    res.end();
   } catch (error) {
     console.error('Error:', error);
-    return new Response(JSON.stringify({ error: 'An error occurred' }), { status: 500 });
+    res.status(500).json({ error: 'An error occurred' });
   }
 } 
