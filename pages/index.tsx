@@ -1,7 +1,8 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import ReactMarkdown from "react-markdown";
+import { upsertUser, createSession, insertMessage, getSessionsForUser, getMessagesForSession } from "../lib/supabaseUtils";
 
 const SUGGESTIONS = [
   "Relationship advice",
@@ -17,7 +18,53 @@ export default function Home() {
   const [hasChatted, setHasChatted] = useState(false);
   const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; content: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const chatId = useRef(0);
+
+  // Upsert user in Supabase when session is available
+  useEffect(() => {
+    // NextAuth profile returns id as user.name, so use that as WorldCoin ID
+    const worldcoin_id = session?.user?.name;
+    const email = typeof session?.user?.email === 'string' ? session.user.email : undefined;
+    if (worldcoin_id) {
+      upsertUser({ worldcoin_id, email })
+        .then((user) => setUserId(user.id))
+        .catch(console.error);
+    }
+  }, [session]);
+
+  // Fetch sessions when userId is available
+  useEffect(() => {
+    if (userId) {
+      getSessionsForUser(userId)
+        .then((data) => setSessions(data))
+        .catch(console.error);
+    }
+  }, [userId, sessionId]); // refetch when new session is created
+
+  // Fetch messages when a session is selected
+  useEffect(() => {
+    if (selectedSessionId) {
+      getMessagesForSession(selectedSessionId)
+        .then((msgs) => {
+          setMessages(
+            msgs.map((m: any) => ({
+              id: m.id,
+              role: m.sender,
+              content: m.content,
+            }))
+          );
+          setHasChatted(true);
+        })
+        .catch(console.error);
+    } else {
+      setMessages([]);
+      setHasChatted(false);
+    }
+  }, [selectedSessionId]);
 
   if (status === "loading") {
     return (
@@ -44,6 +91,23 @@ export default function Home() {
     };
     setMessages((prev) => [...prev, userMsg]);
     setInputValue("");
+
+    // Create session in Supabase if not already
+    let currentSessionId = sessionId;
+    if (!currentSessionId && userId) {
+      try {
+        const sessionRow = await createSession(userId);
+        setSessionId(sessionRow.id);
+        currentSessionId = sessionRow.id;
+      } catch (err) {
+        setIsLoading(false);
+        return;
+      }
+    }
+    // Store user message in Supabase
+    if (currentSessionId) {
+      insertMessage({ session_id: currentSessionId, sender: "user", content: userMsg.content }).catch(console.error);
+    }
 
     // Prepare payload
     const payload = {
@@ -77,6 +141,10 @@ export default function Home() {
           );
         }
       }
+      // Store AI message in Supabase
+      if (currentSessionId) {
+        insertMessage({ session_id: currentSessionId, sender: "ai", content: assistantMsg.content }).catch(console.error);
+      }
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -108,6 +176,28 @@ export default function Home() {
           style={{ filter: "opacity(70%)" }}
         />
       </div>
+
+      {/* Session dropdown */}
+      {sessions.length > 0 && (
+        <div className="w-full max-w-2xl mx-auto mb-4">
+          <label htmlFor="session-dropdown" className="block text-gray-300 mb-2 text-lg font-semibold">Previous Sessions</label>
+          <select
+            id="session-dropdown"
+            className="w-full p-3 rounded-xl bg-gray-800 text-white text-lg mb-2"
+            value={selectedSessionId || ''}
+            onChange={e => {
+              setSelectedSessionId(e.target.value || null);
+            }}
+          >
+            <option value="">Start a new session</option>
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {session?.user?.name || 'User'} — {new Date(s.started_at).toLocaleString()}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Chat area */}
       <div className="w-full max-w-2xl flex-1 flex flex-col justify-end mx-auto">
