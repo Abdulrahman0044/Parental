@@ -228,7 +228,7 @@ export default function Home() {
           id="chat-input"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Ask anything..."
+          placeholder="Ask me about relationships..."
           className="flex-1 p-7 bg-gray-900 text-white border-none rounded-full focus:outline-none focus:ring-4 focus:ring-blue-700 placeholder-gray-400 text-xl shadow-inner min-h-[64px]"
           disabled={!session}
         />
