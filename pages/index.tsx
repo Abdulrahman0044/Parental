@@ -110,7 +110,7 @@ export default function Home() {
           />
           <button
             onClick={() => signIn()}
-            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-semibold rounded-full transition-colors shadow-lg"
+            className="px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-semibold rounded-none transition-colors shadow-lg"
           >
             Sign in with Worldcoin
           </button>
