@@ -40,14 +40,60 @@ export default function ChatUI() {
     setIsLoading(true);
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const response = await fetch('/api/chatbot', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMsg].map(msg => ({
+            role: msg.role === 'assistant' ? 'assistant' : 'user',
+            content: msg.content
+          })),
+          data: { context: '' }
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get response');
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let aiContent = '';
+
       const aiMsg = {
         id: (Date.now() + 1).toString(),
         role: "assistant" as const,
-        content: "Here's some helpful advice about your relationship question..."
+        content: ''
       };
       setMessages(prev => [...prev, aiMsg]);
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          aiContent += chunk;
+          
+          setMessages(prev => 
+            prev.map(msg => 
+              msg.id === aiMsg.id 
+                ? { ...msg, content: aiContent }
+                : msg
+            )
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      const errorMsg = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant" as const,
+        content: "Sorry, I'm having trouble responding right now. Please try again."
+      };
+      setMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
     }

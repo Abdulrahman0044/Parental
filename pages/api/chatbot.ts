@@ -20,8 +20,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
+  
+  if (!process.env.NEXT_PUBLIC_GROQ_API_KEY) {
+    res.status(500).json({ error: 'GROQ API key not configured' });
+    return;
+  }
+  
   try {
     const { messages, data } = req.body;
+    
+    if (!messages || !Array.isArray(messages)) {
+      res.status(400).json({ error: 'Invalid messages format' });
+      return;
+    }
+    
     const context = data?.context || '';
     const userMessage = messages[messages.length - 1]?.content || '';
 
@@ -33,6 +45,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
     const stream = await groq.chat.completions.create({
       messages: enhancedMessages,
@@ -51,6 +65,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.end();
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).json({ error: 'An error occurred' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'An error occurred while processing your request' });
+    }
   }
 } 
