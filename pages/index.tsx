@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import ReactMarkdown from "react-markdown";
+import { upsertUser, createSession, getSessionsForUser, getMessagesForSession, insertMessage } from "../lib/supabaseUtils";
 
 export default function ChatUI() {
   const { data: session } = useSession();
@@ -9,8 +10,72 @@ export default function ChatUI() {
   const [messages, setMessages] = useState<{id: string, role: "user"|"assistant", content: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [credits, setCredits] = useState(50);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [user, setUser] = useState<any>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Initialize user and load sessions
+  useEffect(() => {
+    if (session?.user) {
+      initializeUser();
+    }
+  }, [session]);
+
+  const initializeUser = async () => {
+    try {
+      const userData = await upsertUser({
+        worldcoin_id: session?.user?.id || '',
+        email: session?.user?.email || undefined
+      });
+      setUser(userData);
+      loadSessions(userData.id);
+    } catch (error) {
+      console.error('Error initializing user:', error);
+    }
+  };
+
+  const loadSessions = async (userId: string) => {
+    try {
+      const userSessions = await getSessionsForUser(userId);
+      setSessions(userSessions);
+    } catch (error) {
+      console.error('Error loading sessions:', error);
+    }
+  };
+
+  const createNewSession = async () => {
+    if (!user) return;
+    
+    try {
+      const newSession = await createSession(user.id);
+      setCurrentSessionId(newSession.id);
+      setMessages([]);
+      setSessions(prev => [newSession, ...prev]);
+      setSidebarOpen(false);
+    } catch (error) {
+      console.error('Error creating session:', error);
+    }
+  };
+
+  const loadSession = async (sessionId: string) => {
+    try {
+      const sessionMessages = await getMessagesForSession(sessionId);
+      const formattedMessages = sessionMessages.map(msg => ({
+        id: msg.id,
+        role: msg.sender === 'user' ? 'user' : 'assistant',
+        content: msg.content
+      }));
+      setMessages(formattedMessages);
+      setCurrentSessionId(sessionId);
+      setSidebarOpen(false);
+    } catch (error) {
+      console.error('Error loading session:', error);
+    }
+  };
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -29,6 +94,15 @@ export default function ChatUI() {
     e.preventDefault();
     if (!inputValue.trim() || credits <= 0) return;
     
+    // Create new session if none exists
+    let sessionId = currentSessionId;
+    if (!sessionId && user) {
+      const newSession = await createSession(user.id);
+      sessionId = newSession.id;
+      setCurrentSessionId(sessionId);
+      setSessions(prev => [newSession, ...prev]);
+    }
+    
     const userMsg = {
       id: Date.now().toString(),
       role: "user" as const,
@@ -39,6 +113,18 @@ export default function ChatUI() {
     setCredits(prev => prev - 1);
     setIsLoading(true);
 
+    // Save user message to database
+    if (sessionId) {
+      try {
+        await insertMessage({
+          session_id: sessionId,
+          sender: 'user',
+          content: inputValue
+        });
+      } catch (error) {
+        console.error('Error saving user message:', error);
+      }
+    }
     try {
       const response = await fetch('/api/chatbot', {
         method: 'POST',
@@ -58,6 +144,18 @@ export default function ChatUI() {
         throw new Error('Failed to get response');
       }
 
+      // Save AI response to database
+      if (sessionId && aiContent) {
+        try {
+          await insertMessage({
+            session_id: sessionId,
+            sender: 'ai',
+            content: aiContent
+          });
+        } catch (error) {
+          console.error('Error saving AI message:', error);
+        }
+      }
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let aiContent = '';
@@ -111,12 +209,16 @@ export default function ChatUI() {
     // Text will automatically wrap when reaching edge due to textarea behavior
   };
 
+  const filteredSessions = sessions.filter(session => 
+    session.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    new Date(session.started_at).toLocaleDateString().includes(searchTerm)
+  );
   if (!session) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
         <button 
           onClick={() => signIn()}
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="px-6 py-3 bg-blue-600 text-white rounded-none hover:bg-blue-700 transition-colors"
         >
           Sign In to Continue
         </button>
@@ -127,9 +229,12 @@ export default function ChatUI() {
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100">
       {/* Sidebar - Desktop */}
-      <div className="hidden md:flex flex-col w-64 border-r border-gray-800 bg-gray-950">
+      <div className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-30 flex flex-col w-64 border-r border-gray-800 bg-gray-950 transition-transform duration-300 ease-in-out h-full`}>
         <div className="p-4">
-          <button className="w-full py-2 px-4 bg-blue-600 rounded-md flex items-center gap-2 hover:bg-blue-700 transition-colors">
+          <button 
+            onClick={createNewSession}
+            className="w-full py-2 px-4 bg-blue-600 rounded-md flex items-center gap-2 hover:bg-blue-700 transition-colors"
+          >
             <PlusIcon /> New Chat
           </button>
         </div>
@@ -137,24 +242,57 @@ export default function ChatUI() {
         <div className="p-4 border-t border-gray-800">
           <input 
             type="text" 
-            placeholder="Search sessions..." 
+            placeholder="Search sessions..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-gray-800 p-2 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
         
         <div className="flex-1 overflow-y-auto p-4">
           <h3 className="text-sm text-gray-500 mb-2">Recent Sessions</h3>
-          <div className="text-center text-gray-600 py-8">
-            No sessions yet
+          <div className="space-y-2">
+            {filteredSessions.length === 0 ? (
+              <div className="text-center text-gray-600 py-8">
+                No sessions yet
+              </div>
+            ) : (
+              filteredSessions.map((session) => (
+                <button
+                  key={session.id}
+                  onClick={() => loadSession(session.id)}
+                  className={`w-full text-left p-3 rounded-md hover:bg-gray-800 transition-colors ${
+                    currentSessionId === session.id ? 'bg-gray-800 border-l-2 border-blue-500' : ''
+                  }`}
+                >
+                  <div className="text-sm font-medium text-gray-200 truncate">
+                    Session {session.id.slice(-8)}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    {new Date(session.started_at).toLocaleDateString()}
+                  </div>
+                </button>
+              ))
+            )}
           </div>
         </div>
       </div>
 
+      {/* Overlay for mobile */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 z-20 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
         <header className="flex items-center justify-between p-4 border-b border-gray-800">
-          <button className="md:hidden p-2 hover:bg-gray-800 rounded-md transition-colors">
+          <button 
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="md:hidden p-2 hover:bg-gray-800 rounded-md transition-colors"
+          >
             <MenuIcon />
           </button>
           
